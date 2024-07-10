@@ -5,6 +5,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import "@uniswap/v3-core/contracts/libraries/FullMath.sol";
 
 /// @title OlasManager
@@ -64,6 +65,14 @@ contract OlasManager is ERC20, Ownable {
 
     /// @dev ID for the next unstake request.
     uint256 public nextUnstakeRequestId;
+
+    using EnumerableSet for EnumerableSet.AddressSet;
+
+    /// @dev State variable, which shows if OlasManager is public or not
+    bool public isPublic;
+
+    /// @dev Address set, containing only accounts, which are allowed to make deposits when system is private
+    EnumerableSet.AddressSet private _stakersAllowList;
 
     /// @dev Emitted when a user stakes OLAS tokens.
     /// @param user Address of the user who staked.
@@ -135,6 +144,14 @@ contract OlasManager is ERC20, Ownable {
         uint256 emergencyTreasuryAmount
     );
 
+    /// @dev Emitted when the system is set to private
+    /// @param sender Sender of the call (msg.sender)
+    event SystemPrivate(address indexed sender);
+
+    /// @dev Emitted when the system is set to public
+    /// @param sender Sender of the call (msg.sender)
+    event SystemPublic(address indexed sender);
+
     error OnlyAdmin();
     error OnlyRelayer();
     error OnlyAdminOrRelayer();
@@ -150,6 +167,7 @@ contract OlasManager is ERC20, Ownable {
     error InsufficientSigOlasBalance();
     error InsufficientOlasStaked();
     error OverMaxThreshold();
+    error StakersAllowList();
 
     modifier onlyAdmin() {
         if (msg.sender != admin) {
@@ -207,6 +225,46 @@ contract OlasManager is ERC20, Ownable {
         hostingProtocol = _hostingProtocol;
         maxThreshold = _maxThreshold;
         nextUnstakeRequestId = 1;
+    }
+
+    /// @notice Make the system private
+    function makePrivate() external onlyAdmin {
+        isPublic = false;
+
+        emit SystemPrivate(msg.sender);
+    }
+
+    /// @notice Make the system public
+    function makePublic() external onlyAdmin {
+        isPublic = true;
+
+        emit SystemPublic(msg.sender);
+    }
+
+    /// @dev Get all verified stakers
+    /// @return address[] Array of verified stakers
+    function stakersAllowList() external view returns (address[] memory) {
+        return _stakersAllowList.values();
+    }
+
+    /// @dev Add an array of new stakers to the allow list
+    /// @param stakers Array of new stakers
+    function addStakersToAllowList(
+        address[] calldata stakers
+    ) external onlyAdmin {
+        for (uint256 i = 0; i < stakers.length; ++i) {
+            _stakersAllowList.add(stakers[i]);
+        }
+    }
+
+    /// @notice Remove an array of stakers from the allow list
+    /// @param stakers Array of new stakers
+    function removeStakersFromAllowList(
+        address[] calldata stakers
+    ) external onlyAdmin {
+        for (uint256 i = 0; i < stakers.length; ++i) {
+            _stakersAllowList.remove(stakers[i]);
+        }
     }
 
     /// @dev Sets the admin address.
@@ -279,18 +337,31 @@ contract OlasManager is ERC20, Ownable {
     /// @dev Stakes a specified amount of OLAS tokens and mints corresponding sigOLAS tokens.
     /// @param amount Amount of OLAS tokens to stake.
     function stakeToken(uint256 amount) external {
+        if (!isPublic && !_stakersAllowList.contains(msg.sender)) {
+            revert StakersAllowList();
+        }
+
         if (olasToken.balanceOf(msg.sender) < amount) {
             revert InsufficientOlasBalance();
         }
         if (olasToken.allowance(msg.sender, address(this)) < amount) {
             revert AllowanceNotSet();
         }
+        if (
+            olasToken.balanceOf(address(this)) - olasLocked + amount >
+            maxThreshold
+        ) {
+            revert OverMaxThreshold();
+        }
 
-        uint256 rateD = FullMath.mulDiv(
-            olasToken.balanceOf(address(this)) - olasLocked + olasStaked,
-            DENOMINATOR,
-            totalSupply()
-        );
+        uint256 rateD = DENOMINATOR;
+        if (totalSupply() != 0) {
+            FullMath.mulDiv(
+                olasToken.balanceOf(address(this)) - olasLocked + olasStaked,
+                DENOMINATOR,
+                totalSupply()
+            );
+        }
         uint256 sigOlasAmount = FullMath.mulDiv(amount, DENOMINATOR, rateD);
 
         olasToken.safeTransferFrom(msg.sender, address(this), amount);
@@ -302,6 +373,10 @@ contract OlasManager is ERC20, Ownable {
     /// @dev Creates an unstake request.
     /// @param amount Amount of sigOLAS tokens to unstake.
     function unstakeRequest(uint256 amount) external {
+        if (!isPublic && !_stakersAllowList.contains(msg.sender)) {
+            revert StakersAllowList();
+        }
+
         if (balanceOf(msg.sender) < amount) {
             revert InsufficientSigOlasBalance();
         }
@@ -350,6 +425,10 @@ contract OlasManager is ERC20, Ownable {
     /// @dev Claims an unstake request.
     /// @param unstakeRequestId ID of the unstake request.
     function claimUnstakeRequest(uint256 unstakeRequestId) external {
+        if (!isPublic && !_stakersAllowList.contains(msg.sender)) {
+            revert StakersAllowList();
+        }
+
         UnstakeRequestInfo storage request = unstakeRequests[unstakeRequestId];
         if (request.user != msg.sender) {
             revert NotOwnerOfUnstakeRequest();
