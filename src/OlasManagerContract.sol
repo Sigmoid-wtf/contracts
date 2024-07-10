@@ -334,6 +334,33 @@ contract OlasManager is ERC20, Ownable {
         emit MaxThresholdUpdated(newMaxThreshold);
     }
 
+    /// @dev Get all unstake request by user with given address
+    /// @param userAddress User address
+    /// @return UnstakeRequestInfo[] Array of UnstakeRequestInfo
+    function unstakeRequestInfosByStakerAddress(
+        address userAddress
+    ) external view returns (UnstakeRequestInfo[] memory) {
+        uint256 unstakeRequestsCount = 0;
+        for (uint256 i = 0; i < nextUnstakeRequestId; i++) {
+            if (unstakeRequests[i].user == userAddress) {
+                unstakeRequestsCount++;
+            }
+        }
+
+        UnstakeRequestInfo[] memory requests = new UnstakeRequestInfo[](
+            unstakeRequestsCount
+        );
+        uint256 nextRequestId = 0;
+        for (uint256 i = 0; i < nextUnstakeRequestId; i++) {
+            if (unstakeRequests[i].user == userAddress) {
+                requests[nextRequestId] = unstakeRequests[i];
+                nextRequestId++;
+            }
+        }
+
+        return requests;
+    }
+
     /// @dev Stakes a specified amount of OLAS tokens and mints corresponding sigOLAS tokens.
     /// @param amount Amount of OLAS tokens to stake.
     function stakeToken(uint256 amount) external {
@@ -399,9 +426,9 @@ contract OlasManager is ERC20, Ownable {
         emit UnstakeRequest(msg.sender, amount, olasAmount, unstakeRequestId);
     }
 
-    /// @dev Updates an unstake request by filling it with available tokens.
+    /// @dev Fills an unstake request by filling it with available tokens.
     /// @param unstakeRequestId ID of the unstake request.
-    function updateUnstakeRequest(
+    function fillUnstakeRequest(
         uint256 unstakeRequestId
     ) external onlyAdminOrRelayer {
         UnstakeRequestInfo storage request = unstakeRequests[unstakeRequestId];
