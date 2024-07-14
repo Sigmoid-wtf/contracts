@@ -1,10 +1,10 @@
-// SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.13;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.25;
 
 import "solmate/tokens/ERC20.sol";
 import "solmate/auth/Owned.sol";
 
-contract RoflanToken is ERC20, Owned {
+contract MockToken is ERC20, Owned {
     constructor(string memory name, string memory symbol, uint8 decimals, address owner)
         ERC20(name, symbol, decimals)
         Owned(owner)
