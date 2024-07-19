@@ -25,6 +25,9 @@ contract OlasManager is ERC20, Ownable {
     /// @dev Percentage of the reward fee that goes to the emergency treasury.
     uint256 public emergencyTreasuryFeePercentage = 5;
 
+    /// @dev Constant representing the olas amount to stake per node.
+    uint256 internal constant OlasAmountToStake = 20 ether;
+
     /// @dev The OLAS token contract.
     IERC20 public olasToken;
 
@@ -39,9 +42,6 @@ contract OlasManager is ERC20, Ownable {
 
     /// @dev Address of the emergency treasury.
     address public emergencyTreasury;
-
-    /// @dev Address of the hosting protocol.
-    address public hostingProtocol;
 
     /// @dev Maximum threshold for non-staked OLAS tokens.
     uint256 public maxThreshold;
@@ -66,6 +66,34 @@ contract OlasManager is ERC20, Ownable {
     /// @dev ID for the next unstake request.
     uint256 public nextUnstakeRequestId;
 
+    /// @dev Node statuses
+    enum NodeStatus {
+        QUEUED,
+        RUNNING,
+        STOPPING,
+        DOWN,
+        ERROR
+    }
+
+    /// @dev Structure to store node information
+    struct Node {
+        string nodeType;
+        NodeStatus status;
+        address agent;
+        address operator;
+        address safeAddress;
+        uint256 serviceId;
+    }
+
+    /// @dev Mapping from node ID to node information
+    mapping(uint256 => Node) public nodes;
+
+    /// @dev Mappint from node ID to safe address
+    mapping(uint256 => Node) public safeAddresses;
+
+    /// @dev ID for the next node
+    uint256 public nextNodeId;
+
     using EnumerableSet for EnumerableSet.AddressSet;
 
     /// @dev State variable, which shows if OlasManager is public or not
@@ -85,22 +113,13 @@ contract OlasManager is ERC20, Ownable {
     /// @param amount Amount of sigOLAS tokens to unstake.
     /// @param olasAmount Amount of OLAS tokens to unstake.
     /// @param unstakeRequestId ID of the created unstake request.
-    event UnstakeRequest(
-        address indexed user,
-        uint256 amount,
-        uint256 olasAmount,
-        uint256 unstakeRequestId
-    );
+    event UnstakeRequest(address indexed user, uint256 amount, uint256 olasAmount, uint256 unstakeRequestId);
 
     /// @dev Emitted when a user claims an unstake request.
     /// @param user Address of the user who claimed the unstake request.
     /// @param unstakeRequestId ID of the claimed unstake request.
     /// @param amount Amount of OLAS tokens transferred.
-    event ClaimUnstakeRequest(
-        address indexed user,
-        uint256 unstakeRequestId,
-        uint256 amount
-    );
+    event ClaimUnstakeRequest(address indexed user, uint256 unstakeRequestId, uint256 amount);
 
     /// @dev Emitted when the admin address is updated.
     /// @param newAdmin Address of the new admin.
@@ -118,10 +137,6 @@ contract OlasManager is ERC20, Ownable {
     /// @param newEmergencyTreasury Address of the new emergency treasury.
     event EmergencyTreasuryUpdated(address indexed newEmergencyTreasury);
 
-    /// @dev Emitted when the hosting protocol address is updated.
-    /// @param newHostingProtocol Address of the new hosting protocol.
-    event HostingProtocolUpdated(address indexed newHostingProtocol);
-
     /// @dev Emitted when the maximum threshold for non-staked OLAS tokens is updated.
     /// @param newMaxThreshold The new maximum threshold.
     event MaxThresholdUpdated(uint256 newMaxThreshold);
@@ -129,20 +144,13 @@ contract OlasManager is ERC20, Ownable {
     /// @dev Emitted when an unstake request is updated.
     /// @param unstakeRequestId ID of the unstake request.
     /// @param amountLocked Amount of locked OLAS tokens used.
-    event UnstakeRequestUpdated(
-        uint256 indexed unstakeRequestId,
-        uint256 amountLocked
-    );
+    event UnstakeRequestUpdated(uint256 indexed unstakeRequestId, uint256 amountLocked);
 
     /// @dev Emitted when rewarded OLAS tokens are added to the contract.
     /// @param amount Total amount of rewarded OLAS tokens.
     /// @param treasuryAmount Amount transferred to the treasury.
     /// @param emergencyTreasuryAmount Amount transferred to the emergency treasury.
-    event RewardedOlasAdded(
-        uint256 amount,
-        uint256 treasuryAmount,
-        uint256 emergencyTreasuryAmount
-    );
+    event RewardedOlasAdded(uint256 amount, uint256 treasuryAmount, uint256 emergencyTreasuryAmount);
 
     /// @dev Emitted when the system is set to private
     /// @param sender Sender of the call (msg.sender)
@@ -196,7 +204,6 @@ contract OlasManager is ERC20, Ownable {
     /// @param _relayer Address of the relayer.
     /// @param _treasury Address of the treasury.
     /// @param _emergencyTreasury Address of the emergency treasury.
-    /// @param _hostingProtocol Address of the hosting protocol.
     /// @param _maxThreshold Maximum threshold for non-staked OLAS tokens.
     constructor(
         address _olasToken,
@@ -204,16 +211,11 @@ contract OlasManager is ERC20, Ownable {
         address _relayer,
         address _treasury,
         address _emergencyTreasury,
-        address _hostingProtocol,
         uint256 _maxThreshold
     ) ERC20("SigOlas", "sigOLAS") Ownable(_admin) {
         if (
-            _olasToken == address(0) ||
-            _admin == address(0) ||
-            _relayer == address(0) ||
-            _treasury == address(0) ||
-            _emergencyTreasury == address(0) ||
-            _hostingProtocol == address(0)
+            _olasToken == address(0) || _admin == address(0) || _relayer == address(0) || _treasury == address(0)
+                || _emergencyTreasury == address(0)
         ) {
             revert InvalidAddress();
         }
@@ -222,9 +224,9 @@ contract OlasManager is ERC20, Ownable {
         relayer = _relayer;
         treasury = _treasury;
         emergencyTreasury = _emergencyTreasury;
-        hostingProtocol = _hostingProtocol;
         maxThreshold = _maxThreshold;
         nextUnstakeRequestId = 1;
+        nextNodeId = 1;
     }
 
     /// @notice Make the system private
@@ -249,9 +251,7 @@ contract OlasManager is ERC20, Ownable {
 
     /// @dev Add an array of new stakers to the allow list
     /// @param stakers Array of new stakers
-    function addStakersToAllowList(
-        address[] calldata stakers
-    ) external onlyAdmin {
+    function addStakersToAllowList(address[] calldata stakers) external onlyAdmin {
         for (uint256 i = 0; i < stakers.length; ++i) {
             _stakersAllowList.add(stakers[i]);
         }
@@ -259,9 +259,7 @@ contract OlasManager is ERC20, Ownable {
 
     /// @notice Remove an array of stakers from the allow list
     /// @param stakers Array of new stakers
-    function removeStakersFromAllowList(
-        address[] calldata stakers
-    ) external onlyAdmin {
+    function removeStakersFromAllowList(address[] calldata stakers) external onlyAdmin {
         for (uint256 i = 0; i < stakers.length; ++i) {
             _stakersAllowList.remove(stakers[i]);
         }
@@ -302,29 +300,15 @@ contract OlasManager is ERC20, Ownable {
 
     /// @dev Sets the emergency treasury address.
     /// @param _emergencyTreasury Address of the new emergency treasury.
-    function setEmergencyTreasury(
-        address _emergencyTreasury
-    ) external onlyAdmin {
+    function setEmergencyTreasury(address _emergencyTreasury) external onlyAdmin {
         if (_emergencyTreasury == address(0)) {
             revert InvalidAddress();
         }
-        if (
-            emergencyTreasury != address(0) && balanceOf(emergencyTreasury) != 0
-        ) {
+        if (emergencyTreasury != address(0) && balanceOf(emergencyTreasury) != 0) {
             revert EmergencyTreasuryBalanceNotZero();
         }
         emergencyTreasury = _emergencyTreasury;
         emit EmergencyTreasuryUpdated(_emergencyTreasury);
-    }
-
-    /// @dev Sets the hosting protocol address.
-    /// @param _hostingProtocol Address of the new hosting protocol.
-    function setHostingProtocol(address _hostingProtocol) external onlyAdmin {
-        if (_hostingProtocol == address(0)) {
-            revert InvalidAddress();
-        }
-        hostingProtocol = _hostingProtocol;
-        emit HostingProtocolUpdated(_hostingProtocol);
     }
 
     /// @dev Updates the maximum threshold of non-staked OLAS tokens.
@@ -337,9 +321,11 @@ contract OlasManager is ERC20, Ownable {
     /// @dev Get all unstake request by user with given address
     /// @param userAddress User address
     /// @return UnstakeRequestInfo[] Array of UnstakeRequestInfo
-    function unstakeRequestInfosByStakerAddress(
-        address userAddress
-    ) external view returns (UnstakeRequestInfo[] memory) {
+    function unstakeRequestInfosByStakerAddress(address userAddress)
+        external
+        view
+        returns (UnstakeRequestInfo[] memory)
+    {
         uint256 unstakeRequestsCount = 0;
         for (uint256 i = 0; i < nextUnstakeRequestId; i++) {
             if (unstakeRequests[i].user == userAddress) {
@@ -347,9 +333,7 @@ contract OlasManager is ERC20, Ownable {
             }
         }
 
-        UnstakeRequestInfo[] memory requests = new UnstakeRequestInfo[](
-            unstakeRequestsCount
-        );
+        UnstakeRequestInfo[] memory requests = new UnstakeRequestInfo[](unstakeRequestsCount);
         uint256 nextRequestId = 0;
         for (uint256 i = 0; i < nextUnstakeRequestId; i++) {
             if (unstakeRequests[i].user == userAddress) {
@@ -374,20 +358,13 @@ contract OlasManager is ERC20, Ownable {
         if (olasToken.allowance(msg.sender, address(this)) < amount) {
             revert AllowanceNotSet();
         }
-        if (
-            olasToken.balanceOf(address(this)) - olasLocked + amount >
-            maxThreshold
-        ) {
+        if (olasToken.balanceOf(address(this)) - olasLocked + amount > maxThreshold) {
             revert OverMaxThreshold();
         }
 
         uint256 rateD = DENOMINATOR;
         if (totalSupply() != 0) {
-            FullMath.mulDiv(
-                olasToken.balanceOf(address(this)) - olasLocked + olasStaked,
-                DENOMINATOR,
-                totalSupply()
-            );
+            FullMath.mulDiv(olasToken.balanceOf(address(this)) - olasLocked + olasStaked, DENOMINATOR, totalSupply());
         }
         uint256 sigOlasAmount = FullMath.mulDiv(amount, DENOMINATOR, rateD);
 
@@ -409,18 +386,10 @@ contract OlasManager is ERC20, Ownable {
         }
 
         uint256 unstakeRequestId = nextUnstakeRequestId++;
-        uint256 rateD = FullMath.mulDiv(
-            olasToken.balanceOf(address(this)) - olasLocked + olasStaked,
-            DENOMINATOR,
-            totalSupply()
-        );
+        uint256 rateD =
+            FullMath.mulDiv(olasToken.balanceOf(address(this)) - olasLocked + olasStaked, DENOMINATOR, totalSupply());
         uint256 olasAmount = FullMath.mulDiv(amount, rateD, DENOMINATOR);
-        unstakeRequests[unstakeRequestId] = UnstakeRequestInfo(
-            msg.sender,
-            false,
-            olasAmount,
-            amount
-        );
+        unstakeRequests[unstakeRequestId] = UnstakeRequestInfo(msg.sender, false, olasAmount, amount);
         transfer(address(this), amount);
 
         emit UnstakeRequest(msg.sender, amount, olasAmount, unstakeRequestId);
@@ -428,9 +397,7 @@ contract OlasManager is ERC20, Ownable {
 
     /// @dev Fills an unstake request by filling it with available tokens.
     /// @param unstakeRequestId ID of the unstake request.
-    function fillUnstakeRequest(
-        uint256 unstakeRequestId
-    ) external onlyAdminOrRelayer {
+    function fillUnstakeRequest(uint256 unstakeRequestId) external onlyAdminOrRelayer {
         UnstakeRequestInfo storage request = unstakeRequests[unstakeRequestId];
         if (request.user == address(0)) {
             revert InvalidUnstakeRequestId();
@@ -474,8 +441,8 @@ contract OlasManager is ERC20, Ownable {
 
     /// @dev Locks a specified amount of OLAS tokens and transfers them to the relayer.
     /// @param amount Amount of OLAS tokens to lock.
-    function lockStaking(uint256 amount) external onlyRelayer {
-        if (olasStaked < amount) {
+    function lockStaking(uint256 amount) external onlyAdminOrRelayer {
+        if (olasToken.balanceOf(address(this)) < amount) {
             revert InsufficientOlasStaked();
         }
         olasStaked += amount;
@@ -484,8 +451,8 @@ contract OlasManager is ERC20, Ownable {
 
     /// @dev Transfers OLAS tokens from the relayer and unlocks them.
     /// @param amount Amount of OLAS tokens to unlock.
-    function unlockStaking(uint256 amount) external onlyRelayer {
-        if (olasToken.balanceOf(msg.sender) < amount) {
+    function unlockStaking(uint256 amount) external onlyAdminOrRelayer {
+        if (olasStaked < amount) {
             revert InsufficientOlasBalance();
         }
         olasStaked -= amount;
@@ -495,16 +462,8 @@ contract OlasManager is ERC20, Ownable {
     /// @dev Puts rewarded OLAS tokens into the contract, deducting fees for treasury and emergency treasury.
     /// @param amount Amount of OLAS tokens rewarded.
     function putRewardedOlas(uint256 amount) external onlyAdminOrRelayer {
-        uint256 treasuryAmount = FullMath.mulDiv(
-            amount,
-            treasuryFeePercentage,
-            100
-        );
-        uint256 emergencyTreasuryAmount = FullMath.mulDiv(
-            amount,
-            emergencyTreasuryFeePercentage,
-            100
-        );
+        uint256 treasuryAmount = FullMath.mulDiv(amount, treasuryFeePercentage, 100);
+        uint256 emergencyTreasuryAmount = FullMath.mulDiv(amount, emergencyTreasuryFeePercentage, 100);
 
         olasToken.safeTransferFrom(msg.sender, address(this), amount);
         olasToken.safeTransfer(treasury, treasuryAmount);
@@ -512,4 +471,39 @@ contract OlasManager is ERC20, Ownable {
 
         emit RewardedOlasAdded(amount, treasuryAmount, emergencyTreasuryAmount);
     }
+
+    function runNode(string memory nodeType, address agent, address operator)
+        public
+        onlyAdminOrRelayer
+        returns (uint256)
+    {
+        nodes[nextNodeId] = Node(nodeType, NodeStatus.QUEUED, agent, operator, address(0), 0);
+        emit NodeCreated(nextNodeId, nodeType, agent, operator);
+        emit StatusUpdated(nextNodeId, NodeStatus.QUEUED);
+        return nextNodeId++;
+    }
+
+    function setSafeAddressForNode(uint256 nodeId, address safeAddress) external onlyAdminOrRelayer {
+        require(nodeId < nextNodeId, "Invalid node ID");
+        nodes[nodeId].safeAddress = safeAddress;
+        emit SetSafeAddressForNode(nodeId, safeAddress);
+    }
+
+    function setServiceIdForNode(uint256 nodeId, uint256 serviceId) external onlyAdminOrRelayer {
+        require(nodeId < nextNodeId, "Invalid node ID");
+        nodes[nodeId].serviceId = serviceId;
+        emit SetServiceIdForNode(nodeId, serviceId);
+    }
+
+    function updateStatus(uint256 nodeId, NodeStatus status) public onlyAdminOrRelayer {
+        require(nodeId < nextNodeId, "Invalid node ID");
+        nodes[nodeId].status = status;
+        emit StatusUpdated(nodeId, status);
+    }
+
+    // --------------------------  EVENTS  --------------------------
+    event NodeCreated(uint256 indexed nodeId, string nodeType, address agent, address operator);
+    event SetSafeAddressForNode(uint256 indexed nodeId, address safeAddress);
+    event SetServiceIdForNode(uint256 indexed nodeId, uint256 serviceId);
+    event StatusUpdated(uint256 indexed nodeId, NodeStatus status);
 }

@@ -3,7 +3,6 @@ pragma solidity ^0.8.25;
 
 import {Script, console} from "forge-std/Script.sol";
 import "forge-std/console2.sol";
-import "../src/HostingProtocol.sol";
 import "../src/OlasManagerContract.sol";
 import {MockToken} from "./mock/MockToken.sol";
 
@@ -16,10 +15,8 @@ contract OlasManagerScript is Script {
         vm.startBroadcast();
         MockToken mockToken = new MockToken("MockToken", "MCK", 18, owner);
         console2.log("mockToken", address(mockToken));
-        HostingProtocol hostingProtocol = new HostingProtocol(owner, owner);
-        console2.log("HostingProtocol", address(hostingProtocol));
-        OlasManager olasManager = new OlasManager(address(mockToken), owner, owner, treasury, treasury, address(hostingProtocol), 1 ether);
-        console2.log("HostingProtocol", address(olasManager));
+        OlasManager olasManager = new OlasManager(address(mockToken), owner, owner, treasury, treasury, 100 ether);
+        console2.log("OlasManager", address(olasManager));
         vm.stopBroadcast();
     }
 }

@@ -19,7 +19,6 @@ contract OlasManagerTest is Test {
             address(uint160(uint256(keccak256("relayer")))),
             address(uint160(uint256(keccak256("treasury")))),
             address(uint160(uint256(keccak256("emergency reasury")))),
-            address(uint160(uint256(keccak256("hosting protocol")))),
             10 ether
         );
         olasManager.makePrivate();
@@ -49,6 +48,7 @@ contract OlasManagerTest is Test {
         olasToken.approve(address(olasManager), 2 ether);
         olasManager.stakeToken(2 ether);
         assertEq(olasManager.balanceOf(address(this)), 2 ether);
+        olasManager.lockStaking(2 ether);
     }
 
     function testFail_StakeTokenAsNotVerifiedStaker() public {
@@ -60,5 +60,14 @@ contract OlasManagerTest is Test {
     function testFail_StakeTokenOverMaxThreshold() public {
         olasToken.approve(address(olasManager), 20 ether);
         olasManager.stakeToken(20 ether);
+    }
+
+    function test_RunNode() public {
+        uint256 nodeId = olasManager.runNode(
+            "node", address(uint160(uint256(keccak256("agent")))), address(uint160(uint256(keccak256("operator"))))
+        );
+        olasManager.setSafeAddressForNode(nodeId, address(uint160(uint256(keccak256("safe_address")))));
+        olasManager.setServiceIdForNode(nodeId, 123);
+        olasManager.updateStatus(nodeId, OlasManager.NodeStatus.RUNNING);
     }
 }
